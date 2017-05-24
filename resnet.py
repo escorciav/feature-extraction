@@ -7,7 +7,6 @@ from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 import h5py
 import torch
 import torch.nn as nn
-import torch.backends.cudnn as cudnn
 import torchvision.models as models
 import torchvision.transforms as transforms
 from torch.autograd import Variable
@@ -86,12 +85,17 @@ class ImageFromCSV(ImageFolder):
             return imgs
 
 
-def dump_array(filename, x):
-    with h5py.File(filename, 'w') as fid:
-        fid.create_dataset('feature', data=x, chunks=True)
+class DumpArray(object):
+    def __init__(self, dataset_name):
+        self.dataset_name = dataset_name
+
+    def __class__(self, filename, x):
+        with h5py.File(filename, 'w') as fid:
+            fid.create_dataset(self.dataset_name, data=x, chunks=True)
 
 
-def main(root, filename, prefix, workers, batch_size, print_freq):
+def main(root, filename, prefix, workers, batch_size, dataset_name,
+         print_freq):
     logging.info('ResNet extraction begins')
     logging.info('Loading model')
     model = models.resnet152(pretrained=True)
@@ -119,6 +123,7 @@ def main(root, filename, prefix, workers, batch_size, print_freq):
         batch_size=batch_size,
         num_workers=workers)
 
+    dump_helper = DumpArray(dataset_name)
     filename_fmt = prefix + '-{:06d}.hdf5'
     batch_time = AverageMeter()
     datain_time = AverageMeter()
@@ -137,7 +142,7 @@ def main(root, filename, prefix, workers, batch_size, print_freq):
         end = time.time()
         output_arr = output.cpu().data.numpy()
         filename_i = filename_fmt.format(i)
-        dump_array(filename_i, output_arr)
+        dump_helper(filename_i, output_arr)
         dataout_time.update(time.time() - end)
 
         if (i + 1) % print_freq == 0:
@@ -166,6 +171,8 @@ if __name__ == '__main__':
                         help='number of data loading workers')
     parser.add_argument('-b', '--batch-size', default=512, type=int,
                         help='mini-batch size')
+    parser.add_argument('-h5dn', '--dataset-name', default='resnet152_avgpool',
+                        help='Name for HDF5 dataset')
     parser.add_argument('--print-freq', '-p', default=10, type=int,
                         help='print frequency (default: 10)')
     parser.add_argument('-log', '--loglevel', default='DEBUG',
