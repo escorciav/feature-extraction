@@ -15,8 +15,6 @@ from torch.utils.data import DataLoader
 from torchvision.datasets import ImageFolder
 from torchvision.datasets.folder import default_loader
 
-cudnn.benchmark = True
-
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
