@@ -2,11 +2,35 @@ import collections
 import csv
 import os
 from pathlib import Path
+from collections import OrderedDict
 
 import h5py
 import numpy as np
+import torch.nn as nn
 from torch.utils.data import Dataset
 from torchvision.datasets.folder import default_loader
+
+
+def create_image_csv(filename, dirname):
+    "Dump CSV with frames from a list of videos"
+    newfile = filename + '-img.csv'
+    dirname = Path(dirname)
+    with open(filename, 'r') as fr, open(newfile, 'w') as fw:
+        fw.write('image,label\n')
+        for line in fr:
+            data = line.strip().split(',')
+            video_name, label = data[0], 0
+            if len(data) > 1:
+                label = data[1]
+            video_dir = dirname / video_name
+            if not video_dir.is_dir():
+                continue
+            images = [os.path.join(video_name, i.name)
+                      for i in video_dir.iterdir()]
+            images.sort()
+            for frame in images:
+                fw.write(f'{frame},{label}\n')
+    return newfile
 
 
 def numpy_collate(batch):
@@ -70,6 +94,9 @@ class DumpArray(object):
         self.queue = []
         self.max_size = queue_size
 
+        if not self.dirname.exists():
+            os.makedirs(self.dirname)
+
     def __call__(self, x):
         self.queue.append(x)
         if len(self.queue) == self.max_size:
@@ -108,7 +135,7 @@ class ImageFromCSV(Dataset):
 
     def __init__(self, filename, root='', fields=None, transform=None,
                  target_transform=None, loader=default_loader):
-        self.root = root
+        self.root = Path(root)
         self.filename = filename
         self.fields = fields
         self.transform = transform
@@ -118,20 +145,19 @@ class ImageFromCSV(Dataset):
 
     def _make_dataset(self):
         with open(self.filename, 'r') as fid:
-            data = csv.DictReader(fid, fieldnames=self.fields)
+            reader = csv.DictReader(fid, fieldnames=self.fields)
 
             if self.fields is None:
-                self.fields = data.fieldnames
+                self.fields = reader.fieldnames
             else:
-                for i in self.fields:
-                    if i not in data:
-                        raise ValueError('Missing {} field in {}'
-                                         .format(i, self.filename))
+                check = [i in reader for i in self.fields]
+                if not all(check):
+                    raise ValueError(f'Missing fields in {self.filename}')
 
             imgs = []
-            for i, row in enumerate(data):
+            for i, row in enumerate(reader):
                 img_name = row[self.fields[0]]
-                path = os.path.join(self.root, img_name)
+                path = self.root / img_name
 
                 target = 0
                 if len(self.fields) > 1:
@@ -141,7 +167,7 @@ class ImageFromCSV(Dataset):
             return imgs
 
     def __getitem__(self, index):
-        """
+        """Return item
 
         Args:
             index (int): Index
@@ -160,3 +186,27 @@ class ImageFromCSV(Dataset):
 
     def __len__(self):
         return len(self.imgs)
+
+
+class TrimModel(nn.Module):
+    "Remove layers from pytorch model"
+
+    def __init__(self, model_name, model, stop):
+        super(TrimModel, self).__init__()
+        if 'vgg' in model_name:
+            assert isinstance(stop, list)
+            if len(stop) != 2:
+                raise ValueError('Incorrect value for Trimming model')
+            block_0 = list(model.named_children())[stop[0]][1]
+            self.features = nn.Sequential(
+                OrderedDict(list(block_0.named_children())[:stop[1]]))
+        elif 'resnet' in model_name or 'inception' in model_name:
+            assert isinstance(stop, int)
+            self.features = nn.Sequential(
+                OrderedDict(list(model.named_children())[:stop]))
+        else:
+            raise ValueError('Sorry, this architecture is not supported')
+
+    def forward(self, input):
+        x = self.features(input)
+        return x
