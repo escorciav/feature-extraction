@@ -23,30 +23,32 @@ def make_buckets(indeces, batch_size):
     return buckets
 
 
-def main(dirname, csvfile, filename, batch_size=512, dataset_name='feature'):
-    compression_flags = dict(compression="gzip", compression_opts=9)
-    # Parse csvfile
-    video_series = pd.read_csv(csvfile)['image'].apply(
-        lambda x: os.path.basename(os.path.dirname(x)))
-    hdf5_buckets = sorted(glob.glob(os.path.join(dirname, '*.hdf5')))
+def main(args):
+    h5ds_kwargs = dict(chunks=True)
+    h5ds_kwargs['compression'] = args.compression
+    h5ds_kwargs['compression_opts'] = args.compression_rate
 
-    with h5py.File(filename, 'w') as fw:
+    video_series = pd.read_csv(args.csvfile)['image'].apply(
+        lambda x: os.path.basename(os.path.dirname(x)))
+    hdf5_buckets = sorted(glob.glob(os.path.join(args.dirname, '*.hdf5')))
+
+    with h5py.File(args.filename, 'w') as fw:
         for video_id in video_series.unique():
             # Get buckets where data of ith video was stored
             video_indeces = video_series.index[video_series == video_id].values
-            buckets = make_buckets(video_indeces, batch_size)
+            buckets = make_buckets(video_indeces, args.batch_size)
             feature_list = []
             for b_id, bucket in buckets:
                 hdf5_bucket_i = hdf5_buckets[b_id]
                 # Map indeces into hdf5 indeces based on batch_size
-                indeces = np.remainder(bucket, batch_size)
+                indeces = np.remainder(bucket, args.batch_size)
                 with h5py.File(hdf5_bucket_i, 'r') as fr:
-                    feature_list.append(fr[dataset_name][indeces, ...])
+                    feature_list.append(fr[args.dataset_name][indeces, ...])
 
             feature = np.vstack(feature_list)
             group = fw.create_group(video_id)
-            group.create_dataset(dataset_name, data=feature, chunks=True,
-                                 **compression_flags)
+            group.create_dataset(args.dataset_name, data=feature,
+                                 **h5ds_kwargs)
 
 
 if __name__ == '__main__':
@@ -64,6 +66,8 @@ if __name__ == '__main__':
                         help='mini-batch size used during extraction')
     parser.add_argument('-h5dn', '--dataset-name', default='resnet152_avgpool',
                         help='Name for HDF5 dataset')
+    parser.add_argument('-ca', '--compression', default='lzf')
+    parser.add_argument('-cr', '--compression-rate', default=9, type=int)
     args = parser.parse_args()
 
-    main(**vars(args))
+    main(args)
