@@ -1,3 +1,4 @@
+import logging
 import glob
 import os
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
@@ -24,6 +25,8 @@ def make_buckets(indeces, batch_size):
 
 
 def main(args):
+    logging.info('Packing features in a single HDF5')
+    logging.info(args)
     h5ds_kwargs = dict(chunks=True)
     h5ds_kwargs['compression'] = args.compression
     h5ds_kwargs['compression_opts'] = args.compression_rate
@@ -49,6 +52,7 @@ def main(args):
             group = fw.create_group(video_id)
             group.create_dataset(args.dataset_name, data=feature,
                                  **h5ds_kwargs)
+    logging.info('Successful execution')
 
 
 if __name__ == '__main__':
@@ -64,10 +68,20 @@ if __name__ == '__main__':
                         help='Name of HDF5 file to be generated')
     parser.add_argument('-b', '--batch_size', default=512, type=int,
                         help='mini-batch size used during extraction')
-    parser.add_argument('-h5dn', '--dataset-name', default='resnet152_avgpool',
+    parser.add_argument('-h5dn', '--dataset-name', default='resnet152',
                         help='Name for HDF5 dataset')
-    parser.add_argument('-ca', '--compression', default='lzf')
+    parser.add_argument('-ca', '--compression', default='gzip')
     parser.add_argument('-cr', '--compression-rate', default=9, type=int)
+    # logging
+    parser.add_argument('-log', '--loglevel', default='INFO',
+                        help='Logging level')
     args = parser.parse_args()
+
+    args = parser.parse_args()
+    numeric_level = getattr(logging, args.loglevel.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError('Invalid log level: %s' % args.loglevel)
+    logging.basicConfig(format='%(asctime)s:%(levelname)s:%(message)s',
+                        level=numeric_level)
 
     main(args)

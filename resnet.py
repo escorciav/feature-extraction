@@ -8,7 +8,8 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
 from utils import create_image_csv
-from utils import AverageMeter, DumpArray, ImageFromCSV, TrimModel
+from utils import AverageMeter, DumpArray, ImageFromCSV
+from utils import TrimModel, TrimVGGModel
 
 torch.set_grad_enabled(False)
 PIN_MEMORY = True
@@ -16,9 +17,16 @@ PIN_MEMORY = True
 
 def main(args):
     logging.info('ResNet extraction begins')
+    logging.info(args)
     logging.info('Loading model')
-    model = TrimModel(
-        'resnet152', models.resnet152(pretrained=True), -1)
+    pretrained_model = models.__dict__[args.arch](pretrained=True)
+    if args.arch.startswith('vgg'):
+        model = TrimVGGModel(pretrained_model, (-1, -2))
+    else:
+        if len(args.layer_index) > 1:
+            logging.warning('Ignoring everything except first layer-index')
+        args.layer_index = args.layer_index[0]
+        model = TrimModel(pretrained_model, args.layer_index)
 
     # Use gpu + set inference mode
     logging.info('Shipping model to GPU')
@@ -28,10 +36,11 @@ def main(args):
 
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
-    img_transform = transforms.Compose([
-        transforms.Resize(224),
-        transforms.ToTensor(),
-        normalize])
+    resize_transform = []
+    if sum(args.resize) > 0:
+        resize_transform = [transforms.Resize(args.resize)]
+    img_transform = transforms.Compose(
+        resize_transform + [transforms.ToTensor(), normalize])
 
     if args.is_video_list:
         args.filename = create_image_csv(args.filename, args.root)
@@ -44,10 +53,13 @@ def main(args):
 
     dump_helper = DumpArray(args.dataset_name, queue_size=args.queue_size,
                             dirname=args.prefix)
+    if args.print_freq < 1:
+        args.print_freq *= len(img_loader)
+    args.print_freq = int(max(1, args.print_freq))
     batch_time = AverageMeter()
     in_time = AverageMeter()
     out_time = AverageMeter()
-    logging.info('Dumping features for: {} images'.format(len(img_loader)))
+    logging.info(f'Dumping features for: {(len(img_loader.dataset))} images')
     end = time.time()
     for i, (img, _) in enumerate(img_loader):
         img_d = img.to('cuda:0')
@@ -55,6 +67,8 @@ def main(args):
 
         end = time.time()
         output_d = model(img_d)
+        if args.reduce and sum(output_d.shape[:]) > 2:
+            output_d = output_d.mean(dim=-1).mean(dim=-1)
         batch_time.update(time.time() - end)
 
         end = time.time()
@@ -87,6 +101,18 @@ if __name__ == '__main__':
                         help='CSV file with list of images')
     parser.add_argument('-o', '--prefix', required=True,
                         help='Prefix, including path, for output files.')
+    # network details
+    parser.add_argument('--arch', default='resnet152',
+                        help='torchvision model')
+    parser.add_argument('--layer-index', default=(-1,), type=int, nargs='+',
+                        help=('Layer index to retain (python indices style)'
+                              'VGG requires pairs e.g. -1 -2'))
+    # post-processing details
+    parser.add_argument('--reduce', action='store_true',
+                        help='If True, creates a 1D feature vector per frame')
+    # pre-processing details
+    parser.add_argument('--resize', default=(0, 0), type=int, nargs='+',
+                        help='Parameters for transforms.Resize torchvision')
     # loader
     parser.add_argument('-j', '--num_workers', default=8, type=int,
                         help='number of data loading workers')
@@ -95,7 +121,7 @@ if __name__ == '__main__':
     # Outputs
     parser.add_argument('-q', '--queue-size', default=1, type=int,
                         help='queue size for serializing data')
-    parser.add_argument('-h5dn', '--dataset-name', default='resnet152_avgpool',
+    parser.add_argument('-h5dn', '--dataset-name', default='resnet152',
                         help='Name for HDF5 dataset')
     # optional
     parser.add_argument('-if', '--is-video-list', action='store_true',

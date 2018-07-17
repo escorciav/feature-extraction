@@ -2,7 +2,7 @@ import collections
 import csv
 import os
 from pathlib import Path
-from collections import OrderedDict
+from collections import OrderedDict, Sequence
 
 import h5py
 import numpy as np
@@ -191,22 +191,52 @@ class ImageFromCSV(Dataset):
 class TrimModel(nn.Module):
     "Remove layers from pytorch model"
 
-    def __init__(self, model_name, model, stop):
+    def __init__(self, model, stop):
         super(TrimModel, self).__init__()
-        if 'vgg' in model_name:
-            assert isinstance(stop, list)
-            if len(stop) != 2:
-                raise ValueError('Incorrect value for Trimming model')
-            block_0 = list(model.named_children())[stop[0]][1]
-            self.features = nn.Sequential(
-                OrderedDict(list(block_0.named_children())[:stop[1]]))
-        elif 'resnet' in model_name or 'inception' in model_name:
-            assert isinstance(stop, int)
-            self.features = nn.Sequential(
-                OrderedDict(list(model.named_children())[:stop]))
-        else:
-            raise ValueError('Sorry, this architecture is not supported')
+        assert isinstance(stop, int)
+        self.blocks_of_interest = nn.Sequential(
+            OrderedDict(list(model.named_children())[:stop]))
 
     def forward(self, input):
-        x = self.features(input)
+        x = self.blocks_of_interest(input)
         return x
+
+
+class TrimVGGModel(nn.Module):
+    """Remove layers from VGG-style model
+
+    Note:
+        This is a workaround for VGG models from torchvision/pytorch-zoo
+    """
+
+    def __init__(self, model, stop):
+        super(TrimVGGModel, self).__init__()
+        assert isinstance(stop, Sequence)
+        if len(stop) != 2:
+            raise ValueError(f'Incorrect value for Trimming {model_name}')
+        if stop[0] == 0:
+            self._only_conv_vgg(model, stop)
+        else:
+            self._chop_later_blocks(model, stop)
+
+    def forward(self, input):
+        x = self.blocks_of_interest(input)
+        if self.second_part is not None:
+            # the hack is below :see_no_evil:
+            x = self.second_part(x.view(x.size(0), -1))
+        return x
+
+    def _only_conv_vgg(self, model, stop):
+        "retain frist block and chop it up to stop[1]"
+        assert stop[0] == 0
+        block_0 = list(model.named_children())[stop[0]][1]
+        self.blocks_of_interest = nn.Sequential(
+            OrderedDict(list(block_0.named_children())[:stop[1]]))
+        self.second_part = None
+
+    def _chop_later_blocks(self, model, stop):
+        "retain all blocks before stop[0] and chop stop[0] up to stop[1]"
+        blocks = list(model.named_children())
+        self.blocks_of_interest = nn.Sequential(OrderedDict(blocks[:stop[0]]))
+        self.second_part = nn.Sequential(OrderedDict(list(
+            blocks[stop[0]][1].named_children())[:stop[1]]))
