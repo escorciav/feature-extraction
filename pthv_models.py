@@ -1,3 +1,8 @@
+"""Extract features from PyTorcH Vision models (pthv :wink:)
+
+so far only tested with resnet152 and vgg16, but should also work for other
+models (at least resnetX :joy:)
+"""
 import logging
 import time
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
@@ -16,7 +21,7 @@ PIN_MEMORY = True
 
 
 def main(args):
-    logging.info('ResNet extraction begins')
+    logging.info('Feature extraction begins')
     logging.info(args)
     logging.info('Loading model')
     pretrained_model = models.__dict__[args.arch](pretrained=True)
@@ -93,8 +98,9 @@ def main(args):
 
 
 if __name__ == '__main__':
-    parser = ArgumentParser(description='PyTorch ResNet feature extraction',
-                            formatter_class=ArgumentDefaultsHelpFormatter)
+    parser = ArgumentParser(
+        description='Feature extraction from torchvision models',
+        formatter_class=ArgumentDefaultsHelpFormatter)
     parser.add_argument('-r', '--root', required=True,
                         help='path to dataset')
     parser.add_argument('-f', '--filename', required=True,
