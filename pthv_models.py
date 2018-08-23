@@ -9,6 +9,7 @@ from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 
 import torch
 import torchvision.models as models
+import pretrainedmodels as models_3rdparty
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
@@ -18,13 +19,24 @@ from utils import TrimModel, TrimVGGModel
 
 torch.set_grad_enabled(False)
 PIN_MEMORY = True
+ARCH_KWARGS = dict(pretrained=True)
+MEAN = [0.485, 0.456, 0.406]
+STD = [0.229, 0.224, 0.225]
 
 
 def main(args):
     logging.info('Feature extraction begins')
     logging.info(args)
     logging.info('Loading model')
-    pretrained_model = models.__dict__[args.arch](pretrained=True)
+    if args.arch in models.__dict__:
+        pretrained_model = models.__dict__[args.arch](**ARCH_KWARGS)
+    elif args.arch in models_3rdparty.__dict__:
+        logging.info('3rdparty models')
+        # TODO: hard-code. make if clausule more flexible
+        if args.arch == 'inceptionv4':
+            ARCH_KWARGS.update(num_classes=1001,
+                               pretrained='imagenet+background')
+        pretrained_model = models_3rdparty.__dict__[args.arch](**ARCH_KWARGS)
     if args.arch.startswith('vgg'):
         model = TrimVGGModel(pretrained_model, (-1, -2))
     else:
@@ -39,8 +51,11 @@ def main(args):
     logging.info('Setup model in inference mode')
     model.eval()
 
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
+    # TODO: hard-code. make if clausule more flexible
+    if args.arch == 'inceptionv4':
+        MEAN = [0.5, 0.5, 0.5]
+        STD = [0.5, 0.5, 0.5]
+    normalize = transforms.Normalize(mean=MEAN, std=STD)
     resize_transform = []
     if sum(args.resize) > 0:
         resize_transform = [transforms.Resize(args.resize)]
