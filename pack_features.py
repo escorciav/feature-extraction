@@ -33,10 +33,13 @@ def main(args):
 
     video_series = pd.read_csv(args.csvfile)['image'].apply(
         lambda x: os.path.basename(os.path.dirname(x)))
+        # lambda x: os.path.basename(x))
     hdf5_buckets = sorted(glob.glob(os.path.join(args.dirname, '*.hdf5')))
+    unique_videos = video_series.unique()
+    print_freq = max(int(len(unique_videos) * 0.1), 1)
 
     with h5py.File(args.filename, 'w') as fw:
-        for video_id in video_series.unique():
+        for i, video_id in enumerate(unique_videos):
             # Get buckets where data of ith video was stored
             video_indeces = video_series.index[video_series == video_id].values
             buckets = make_buckets(video_indeces, args.batch_size)
@@ -49,9 +52,12 @@ def main(args):
                     feature_list.append(fr[args.dataset_name][indeces, ...])
 
             feature = np.vstack(feature_list)
-            group = fw.create_group(video_id)
-            group.create_dataset(args.dataset_name, data=feature,
-                                 **h5ds_kwargs)
+            # group = fw.create_group(video_id)
+            # group.create_dataset(args.dataset_name, data=feature,
+            #                      **h5ds_kwargs)
+            fw.create_dataset(video_id, data=feature, **h5ds_kwargs)
+            if (i + 1) % print_freq == 0:
+                logging.info(f'Progress [{i}/{len(unique_videos)}]')
     logging.info('Successful execution')
 
 
