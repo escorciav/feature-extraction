@@ -3,6 +3,7 @@ import time
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 
 import torch
+import torch.nn.functional as F
 import torchvision.models as models
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
@@ -18,7 +19,7 @@ def main(args):
     logging.info('ResNet extraction begins')
     logging.info('Loading model')
     model = TrimModel(
-        'resnet152', models.resnet152(pretrained=True), -1)
+        'resnet152', models.resnet152(pretrained=True), -2)
 
     # Use gpu + set inference mode
     logging.info('Shipping model to GPU')
@@ -29,7 +30,7 @@ def main(args):
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
     img_transform = transforms.Compose([
-        transforms.Resize(224),
+        transforms.Resize((240, 320)),
         transforms.ToTensor(),
         normalize])
 
@@ -47,29 +48,36 @@ def main(args):
     batch_time = AverageMeter()
     in_time = AverageMeter()
     out_time = AverageMeter()
-    logging.info('Dumping features for: {} images'.format(len(img_loader)))
-    end = time.time()
-    for i, (img, _) in enumerate(img_loader):
-        img_d = img.to('cuda:0')
-        in_time.update(time.time() - end)
-
+    logging.info(f'Dumping features for: {len(img_loader.dataset)} images')
+    with torch.set_grad_enabled(False):
         end = time.time()
-        output_d = model(img_d)
-        batch_time.update(time.time() - end)
+        for i, (img, _) in enumerate(img_loader):
+            img_d = img.to('cuda:0')
+            in_time.update(time.time() - end)
 
-        end = time.time()
-        output_h = output_d.to('cpu')
-        output_arr = output_h.detach().numpy()
-        dump_helper(output_arr)
-        out_time.update(time.time() - end)
+            end = time.time()
+            output_d = model(img_d)
+            if args.adaptive_pool:
+                output_d = F.adaptive_avg_pool2d(output_d, output_size=(1, 1))
+            if args.squeeze:
+                if args.batch_size == 1:
+                    raise ValueError('WIP: edge case. Increase batch size.')
+                output_d = output_d.squeeze()
+            batch_time.update(time.time() - end)
 
-        if (i + 1) % args.print_freq == 0:
-            logging.info(
-                f'[{i + 1}/{len(img_loader)}]\t'
-                f'Batch {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                f'Data-in {in_time.val:.3f} ({in_time.avg:.3f})\t'
-                f'Data-out {out_time.val:.3f} ({out_time.avg:.3f})\t')
-        end = time.time()
+            end = time.time()
+            output_h = output_d.to('cpu')
+            output_arr = output_h.detach().numpy()
+            dump_helper(output_arr)
+            out_time.update(time.time() - end)
+
+            if (i + 1) % args.print_freq == 0:
+                logging.info(
+                    f'[{i + 1}/{len(img_loader)}]\t'
+                    f'Batch {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                    f'Data-in {in_time.val:.3f} ({in_time.avg:.3f})\t'
+                    f'Data-out {out_time.val:.3f} ({out_time.avg:.3f})\t')
+            end = time.time()
 
     dump_helper.close()
     logging.info(f'Batch {batch_time.avg:.3f}\t'
@@ -100,6 +108,10 @@ if __name__ == '__main__':
     # optional
     parser.add_argument('-if', '--is-video-list', action='store_true',
                         help='CSV contain video names')
+    parser.add_argument('--adaptive-pool', action='store_true',
+                        help='Force avg pool over spatial dimension')
+    parser.add_argument('--squeeze', action='store_true',
+                        help='Remove singleton dimension')
     # Logging and verbosity
     parser.add_argument('--print-freq', '-p', default=0.1, type=float,
                         help='print frequency')
