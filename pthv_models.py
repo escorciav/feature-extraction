@@ -1,15 +1,15 @@
 """Extract features from PyTorcH Vision models (pthv :wink:)
 
-so far only tested with resnet152 and vgg16, but should also work for other
-models (at least resnetX :joy:)
+so far only tested with resnet152, vgg16 and inceptionv4 but should also work
+for other models (at least resnetX :joy:)
 """
 import logging
 import time
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 
 import torch
+import torch.nn.functional as F
 import torchvision.models as models
-import pretrainedmodels as models_3rdparty
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
@@ -17,26 +17,36 @@ from utils import create_image_csv
 from utils import AverageMeter, DumpArray, ImageFromCSV
 from utils import TrimModel, TrimVGGModel
 
-torch.set_grad_enabled(False)
+torch.backends.cudnn.enabled = True
 PIN_MEMORY = True
 ARCH_KWARGS = dict(pretrained=True)
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
 
 
-def main(args):
-    logging.info('Feature extraction begins')
-    logging.info(args)
+def setup_model(args):
     logging.info('Loading model')
     if args.arch in models.__dict__:
         pretrained_model = models.__dict__[args.arch](**ARCH_KWARGS)
-    elif args.arch in models_3rdparty.__dict__:
-        logging.info('3rdparty models')
-        # TODO: hard-code. make if clausule more flexible
-        if args.arch == 'inceptionv4':
-            ARCH_KWARGS.update(num_classes=1001,
-                               pretrained='imagenet+background')
-        pretrained_model = models_3rdparty.__dict__[args.arch](**ARCH_KWARGS)
+    else:
+        try:
+            import pretrainedmodels as models_3rdparty
+        except ModuleNotFoundError as err:
+            logging.error('Not found module "pretrainedmodels"')
+            raise ValueError('Not found module "pretrainedmodels"') from err
+
+        if args.arch in models_3rdparty.__dict__:
+            logging.info('3rdparty models')
+            # TODO: hard-code. make if clausule more flexible
+            if args.arch == 'inceptionv4':
+                ARCH_KWARGS.update(num_classes=1001,
+                                   pretrained='imagenet+background')
+            pretrained_model = models_3rdparty.__dict__[args.arch](
+                **ARCH_KWARGS)
+        else:
+            logging.error(f'Not found arch: {args.arch}')
+            raise ValueError(f'Not found arch: {args.arch}')
+
     if args.arch.startswith('vgg'):
         model = TrimVGGModel(pretrained_model, (-1, -2))
     else:
@@ -45,17 +55,25 @@ def main(args):
         args.layer_index = args.layer_index[0]
         model = TrimModel(pretrained_model, args.layer_index)
 
-    # Use gpu + set inference mode
+    return model
+
+
+def main(args, mean=MEAN, std=STD):
+    logging.info('Feature extraction begins')
+    logging.info(args)
+
+    # set model + send to gpu + set inference mode
+    model = setup_model(args)
     logging.info('Shipping model to GPU')
     model.to('cuda:0')
-    logging.info('Setup model in inference mode')
+    logging.info('Set inference mode')
     model.eval()
 
     # TODO: hard-code. make if clausule more flexible
     if args.arch == 'inceptionv4':
-        MEAN = [0.5, 0.5, 0.5]
-        STD = [0.5, 0.5, 0.5]
-    normalize = transforms.Normalize(mean=MEAN, std=STD)
+        mean = [0.5, 0.5, 0.5]
+        std = [0.5, 0.5, 0.5]
+    normalize = transforms.Normalize(mean=mean, std=std)
     resize_transform = []
     if sum(args.resize) > 0:
         resize_transform = [transforms.Resize(args.resize)]
@@ -71,6 +89,8 @@ def main(args):
         num_workers=args.num_workers,
         pin_memory=PIN_MEMORY)
 
+    if args.batch_size == 1 and args.reduce:
+        raise ValueError('WIP: edge case. Increase batch size.')
     dump_helper = DumpArray(args.dataset_name, queue_size=args.queue_size,
                             dirname=args.prefix)
     if args.print_freq < 1:
@@ -80,30 +100,34 @@ def main(args):
     in_time = AverageMeter()
     out_time = AverageMeter()
     logging.info(f'Dumping features for: {(len(img_loader.dataset))} images')
-    end = time.time()
-    for i, (img, _) in enumerate(img_loader):
-        img_d = img.to('cuda:0')
-        in_time.update(time.time() - end)
-
+    with torch.set_grad_enabled(False):
         end = time.time()
-        output_d = model(img_d)
-        if args.reduce and sum(output_d.shape[:]) > 2:
-            output_d = output_d.mean(dim=-1).mean(dim=-1)
-        batch_time.update(time.time() - end)
+        for i, (img, _) in enumerate(img_loader):
+            img_d = img.to('cuda:0')
+            in_time.update(time.time() - end)
 
-        end = time.time()
-        output_h = output_d.to('cpu')
-        output_arr = output_h.detach().numpy()
-        dump_helper(output_arr)
-        out_time.update(time.time() - end)
+            end = time.time()
+            output_d = model(img_d)
+            if args.reduce:
+                if sum(output_d.shape[:]) > 2:
+                    output_d = F.adaptive_avg_pool2d(
+                        output_d, output_size=(1, 1))
+                output_d = output_d.squeeze()
+            batch_time.update(time.time() - end)
 
-        if (i + 1) % args.print_freq == 0:
-            logging.info(
-                f'[{i + 1}/{len(img_loader)}]\t'
-                f'Batch {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                f'Data-in {in_time.val:.3f} ({in_time.avg:.3f})\t'
-                f'Data-out {out_time.val:.3f} ({out_time.avg:.3f})\t')
-        end = time.time()
+            end = time.time()
+            output_h = output_d.to('cpu')
+            output_arr = output_h.detach().numpy()
+            dump_helper(output_arr)
+            out_time.update(time.time() - end)
+
+            if (i + 1) % args.print_freq == 0:
+                logging.info(
+                    f'[{i + 1}/{len(img_loader)}]\t'
+                    f'Batch {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                    f'Data-in {in_time.val:.3f} ({in_time.avg:.3f})\t'
+                    f'Data-out {out_time.val:.3f} ({out_time.avg:.3f})\t')
+            end = time.time()
 
     dump_helper.close()
     logging.info(f'Batch {batch_time.avg:.3f}\t'
